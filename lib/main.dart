@@ -4,6 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'services/auth_service.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'services/pdf_text_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -760,16 +761,50 @@ class _AddNoticeScreenState extends State<AddNoticeScreen> {
   final descriptionController = TextEditingController();
 
   String selectedCategory = 'General';
+  String detectCategory(String text) {
+  final content = text.toLowerCase();
+
+  if (content.contains('exam') ||
+      content.contains('examination') ||
+      content.contains('result') ||
+      content.contains('timetable')) {
+    return 'Examination';
+  }
+
+  if (content.contains('placement') ||
+      content.contains('internship') ||
+      content.contains('job') ||
+      content.contains('recruitment')) {
+    return 'Placement';
+  }
+
+  if (content.contains('event') ||
+      content.contains('fest') ||
+      content.contains('workshop') ||
+      content.contains('seminar')) {
+    return 'Events';
+  }
+
+  if (content.contains('assignment') ||
+      content.contains('lecture') ||
+      content.contains('class') ||
+      content.contains('academic')) {
+    return 'Academics';
+  }
+
+  return 'General';
+}
   DateTime? selectedDate;
 
   PlatformFile? selectedPdf;
-
+  String extractedPdfText = '';
   bool isLoading = false;
 
   final List<String> categories = [
-    'Exams',
+    'Examination',
+    'Placement',
     'Events',
-    'Holidays',
+    'Academics',
     'General',
   ];
 
@@ -782,26 +817,53 @@ class _AddNoticeScreenState extends State<AddNoticeScreen> {
 
   // SELECT PDF FROM DEVICE
 
-  Future<void> choosePdf() async {
-    try {
-      final file = await FilePicker.pickFile(
-        type: FileType.custom,
-        allowedExtensions: ['pdf'],
-      );
+  
+Future<void> choosePdf() async {
+  try {
+    final file = await FilePicker.pickFile(
+      type: FileType.custom,
+      allowedExtensions: ['pdf'],
+    );
 
-      if (file == null) return;
+    if (file == null) return;
 
-      setState(() {
-        selectedPdf = file;
-      });
-    } catch (error) {
-      if (!mounted) return;
+    final pdfBytes = await file.readAsBytes();
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not select PDF: $error')),
-      );
-    }
+    final extractedText =
+        PdfTextService.extractText(pdfBytes);
+
+    if (!mounted) return;
+
+    setState(() {
+      selectedPdf = file;
+      extractedPdfText = extractedText;
+
+      if (descriptionController.text.trim().isEmpty &&
+          extractedText.trim().isNotEmpty) {
+        descriptionController.text = extractedText;
+      }
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          extractedText.trim().isEmpty
+              ? 'PDF selected, but no readable text was found.'
+              : 'PDF selected and text extracted successfully!',
+        ),
+      ),
+    );
+  } catch (error) {
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Could not process PDF: $error'),
+      ),
+    );
   }
+}
+
 
   // SELECT NOTICE DATE
 
@@ -864,10 +926,15 @@ class _AddNoticeScreenState extends State<AddNoticeScreen> {
       }
 
       // SAVE NOTICE DETAILS AND PDF URL IN DATABASE
+      final detectedCategory = detectCategory(
+  '${titleController.text} ${descriptionController.text}',
+);
 
+debugPrint('NOTICE TITLE: ${titleController.text}');
+debugPrint('DETECTED CATEGORY: $detectedCategory');
       await Supabase.instance.client.from('notices').insert({
         'title': titleController.text.trim(),
-        'category': selectedCategory,
+        'category': detectedCategory,
         'description': descriptionController.text.trim(),
         'notice_date':
             '${selectedDate!.year.toString().padLeft(4, '0')}-'
@@ -1103,9 +1170,10 @@ class _StudentDashboardScreenState extends State<StudentDashboardScreen> {
 
   final List<String> categories = [
     'All',
-    'Exams',
+    'Examination',
+    'Placement',
     'Events',
-    'Holidays',
+    'Academics',
     'General',
   ];
 
