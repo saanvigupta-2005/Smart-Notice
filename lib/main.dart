@@ -5,6 +5,7 @@ import 'services/auth_service.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'services/pdf_text_service.dart';
+import 'services/notice_parser_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -445,7 +446,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 const Text('Department'),
                 const SizedBox(height: 8),
                 DropdownButtonFormField<String>(
-                  initialValue: selectedDepartment,
+                  value: selectedDepartment,
                   decoration: _inputDecoration(null, Icons.school_outlined),
                   hint: const Text('Select your department'),
                   items: departments.map((department) {
@@ -468,7 +469,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 const Text('Academic Year'),
                 const SizedBox(height: 8),
                 DropdownButtonFormField<String>(
-                  initialValue: selectedYear,
+                  value: selectedYear,
                   decoration: _inputDecoration(null, null),
                   hint: const Text('Select your year'),
                   items: years.map((year) {
@@ -574,52 +575,185 @@ InputDecoration _inputDecoration(String? hint, IconData? icon) {
 
 // ADMIN DASHBOARD
 
-class AdminDashboardScreen extends StatelessWidget {
+class AdminDashboardScreen extends StatefulWidget {
   const AdminDashboardScreen({super.key});
 
-  Future<void> logout(BuildContext context) async {
+  @override
+  State<AdminDashboardScreen> createState() => _AdminDashboardScreenState();
+}
+
+class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
+  List<Map<String, String>> notices = [];
+  bool isLoading = true;
+  String? errorMessage;
+  String selectedCategory = 'All';
+  final TextEditingController searchController = TextEditingController();
+
+  final List<String> categories = [
+    'All',
+    'Examination',
+    'Placement',
+    'Events',
+    'Academics',
+    'General',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    fetchNotices();
+  }
+
+  @override
+  void dispose() {
+    searchController.dispose();
+    super.dispose();
+  }
+
+  Future<void> fetchNotices() async {
+    setState(() {
+      isLoading = true;
+      errorMessage = null;
+    });
+
+    try {
+      final data = await Supabase.instance.client
+          .from('notices')
+          .select()
+          .order('created_at', ascending: false);
+
+      if (!mounted) return;
+
+      setState(() {
+        notices = data.map<Map<String, String>>((notice) {
+          return {
+            'id': (notice['id'] ?? '').toString(),
+            'title': (notice['title'] ?? '').toString(),
+            'category': (notice['category'] ?? 'General').toString(),
+            'date': (notice['notice_date'] ?? '').toString(),
+            'description': (notice['description'] ?? '').toString(),
+            'pdf_url': (notice['pdf_url'] ?? '').toString(),
+          };
+        }).toList();
+        isLoading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        errorMessage = e.toString();
+        isLoading = false;
+      });
+    }
+  }
+
+  Future<void> logout() async {
     try {
       await AuthService().logoutStudent();
-
-      if (!context.mounted) return;
-
+      if (!mounted) return;
       Navigator.pushAndRemoveUntil(
         context,
-        MaterialPageRoute(
-          builder: (context) => const LoginScreen(),
-        ),
+        MaterialPageRoute(builder: (context) => const LoginScreen()),
         (route) => false,
       );
     } catch (error) {
-      if (!context.mounted) return;
-
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Logout failed: $error')),
       );
     }
   }
 
-  Future<void> openAddNotice(BuildContext context) async {
+  Future<void> openAddNotice() async {
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => const AddNoticeScreen()),
+    );
+
+    if (result == true && mounted) {
+      fetchNotices();
+    }
+  }
+
+  Future<void> openEditNotice(Map<String, String> notice) async {
     final result = await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => const AddNoticeScreen(),
+        builder: (context) => EditNoticeScreen(notice: notice),
       ),
     );
 
-    if (!context.mounted) return;
+    if (result == true && mounted) {
+      fetchNotices();
+    }
+  }
 
-    if (result == true) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Notice added successfully!'),
+  Future<void> confirmDeleteNotice(Map<String, String> notice) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.delete_forever, color: Colors.red),
+            SizedBox(width: 8),
+            Text('Delete Notice'),
+          ],
         ),
-      );
+        content: Text(
+          'Are you sure you want to delete "${notice['title']}"?\n\nThis will permanently remove the notice for all students.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true && mounted) {
+      try {
+        await Supabase.instance.client
+            .from('notices')
+            .delete()
+            .eq('id', notice['id']!);
+
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Notice deleted successfully!'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+        fetchNotices();
+      } catch (e) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not delete notice: $e')),
+        );
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final filteredNotices = notices.where((notice) {
+      final matchesCategory = selectedCategory == 'All' ||
+          notice['category'] == selectedCategory;
+      final searchText = searchController.text.toLowerCase();
+      final matchesSearch = notice['title']!.toLowerCase().contains(searchText) ||
+          notice['description']!.toLowerCase().contains(searchText);
+      return matchesCategory && matchesSearch;
+    }).toList();
+
     return Scaffold(
       backgroundColor: const Color(0xFFF4F6FA),
       appBar: AppBar(
@@ -631,115 +765,417 @@ class AdminDashboardScreen extends StatelessWidget {
         foregroundColor: Colors.white,
         actions: [
           IconButton(
+            icon: const Icon(Icons.refresh),
+            tooltip: 'Refresh',
+            onPressed: fetchNotices,
+          ),
+          IconButton(
             icon: const Icon(Icons.logout),
             tooltip: 'Logout',
-            onPressed: () => logout(context),
+            onPressed: logout,
           ),
         ],
       ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: openAddNotice,
+        backgroundColor: const Color(0xFF2457C5),
+        foregroundColor: Colors.white,
+        icon: const Icon(Icons.add),
+        label: const Text('Add Notice'),
+      ),
       body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(22),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const SizedBox(height: 25),
-              const Icon(
-                Icons.admin_panel_settings,
-                size: 85,
-                color: Color(0xFF2457C5),
-              ),
-              const SizedBox(height: 20),
-              const Text(
-                'Welcome, Admin!',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 26,
-                  fontWeight: FontWeight.bold,
-                  color: Color(0xFF18366F),
-                ),
-              ),
-              const SizedBox(height: 10),
-              const Text(
-                'Manage your college notices from here.',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 15,
-                  color: Colors.black54,
-                ),
-              ),
-              const SizedBox(height: 40),
-              const Text(
-                'Notice Management',
-                style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                  color: Color(0xFF18366F),
-                ),
-              ),
-              const SizedBox(height: 15),
-              Card(
-                color: Colors.white,
-                elevation: 2,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Padding(
+        child: RefreshIndicator(
+          onRefresh: fetchNotices,
+          child: SingleChildScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // Welcome Banner
+                Container(
                   padding: const EdgeInsets.all(20),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [Color(0xFF2457C5), Color(0xFF18366F)],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                  child: Row(
                     children: [
-                      const Icon(
-                        Icons.post_add,
-                        size: 45,
-                        color: Color(0xFF2457C5),
-                      ),
-                      const SizedBox(height: 15),
-                      const Text(
-                        'Add a New Notice',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
+                      const CircleAvatar(
+                        radius: 28,
+                        backgroundColor: Colors.white24,
+                        child: Icon(
+                          Icons.admin_panel_settings,
+                          color: Colors.white,
+                          size: 32,
                         ),
                       ),
-                      const SizedBox(height: 8),
-                      const Text(
-                        'Publish important college announcements, '
-                        'exam schedules, events and holidays.',
-                        style: TextStyle(
-                          color: Colors.black54,
-                          height: 1.5,
-                        ),
-                      ),
-                      const SizedBox(height: 20),
-                      SizedBox(
-                        width: double.infinity,
-                        height: 52,
-                        child: ElevatedButton.icon(
-                          onPressed: () => openAddNotice(context),
-                          icon: const Icon(Icons.add),
-                          label: const Text(
-                            'ADD NEW NOTICE',
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
+                      const SizedBox(width: 16),
+                      const Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Admin Portal',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 22,
+                                fontWeight: FontWeight.bold,
+                              ),
                             ),
-                          ),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF2457C5),
-                            foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
+                            SizedBox(height: 4),
+                            Text(
+                              'Publish, edit and manage college notices.',
+                              style: TextStyle(
+                                color: Colors.white70,
+                                fontSize: 13,
+                              ),
                             ),
-                          ),
+                          ],
                         ),
+                      ),
+                      IconButton(
+                        onPressed: openAddNotice,
+                        icon: const Icon(Icons.add_circle, color: Colors.white, size: 32),
+                        tooltip: 'Add Notice',
                       ),
                     ],
                   ),
                 ),
-              ),
-            ],
+                const SizedBox(height: 20),
+
+                // Stats Row
+                Row(
+                  children: [
+                    Expanded(
+                      child: _buildStatCard(
+                        'Total Notices',
+                        notices.length.toString(),
+                        Icons.campaign,
+                        const Color(0xFF2457C5),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _buildStatCard(
+                        'Exams',
+                        notices.where((n) => n['category'] == 'Examination').length.toString(),
+                        Icons.school,
+                        Colors.orange,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _buildStatCard(
+                        'Placements',
+                        notices.where((n) => n['category'] == 'Placement').length.toString(),
+                        Icons.work,
+                        Colors.teal,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 25),
+
+                // Search Bar
+                TextField(
+                  controller: searchController,
+                  onChanged: (_) => setState(() {}),
+                  decoration: InputDecoration(
+                    hintText: 'Search notices by keyword...',
+                    prefixIcon: const Icon(Icons.search),
+                    suffixIcon: searchController.text.isNotEmpty
+                        ? IconButton(
+                            icon: const Icon(Icons.clear),
+                            onPressed: () {
+                              searchController.clear();
+                              setState(() {});
+                            },
+                          )
+                        : null,
+                    filled: true,
+                    fillColor: Colors.white,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide: BorderSide.none,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                // Category Chips Filter
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: categories.map((cat) {
+                      final isSelected = selectedCategory == cat;
+                      return Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: FilterChip(
+                          label: Text(cat),
+                          selected: isSelected,
+                          onSelected: (_) {
+                            setState(() => selectedCategory = cat);
+                          },
+                          selectedColor: const Color(0xFF2457C5),
+                          labelStyle: TextStyle(
+                            color: isSelected ? Colors.white : Colors.black87,
+                            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                          ),
+                          backgroundColor: Colors.white,
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ),
+                const SizedBox(height: 20),
+
+                // Notices Header
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Manage Notices (${filteredNotices.length})',
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF18366F),
+                      ),
+                    ),
+                    TextButton.icon(
+                      onPressed: openAddNotice,
+                      icon: const Icon(Icons.add, size: 18),
+                      label: const Text('Add Notice'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+
+                // Notices List
+                if (isLoading)
+                  const Padding(
+                    padding: EdgeInsets.all(40),
+                    child: Center(
+                      child: CircularProgressIndicator(color: Color(0xFF2457C5)),
+                    ),
+                  )
+                else if (errorMessage != null)
+                  Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        children: [
+                          const Icon(Icons.error_outline, color: Colors.red, size: 40),
+                          const SizedBox(height: 8),
+                          Text('Error: $errorMessage'),
+                          const SizedBox(height: 12),
+                          ElevatedButton(
+                            onPressed: fetchNotices,
+                            child: const Text('Retry'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                else if (filteredNotices.isEmpty)
+                  Container(
+                    padding: const EdgeInsets.all(35),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: Column(
+                      children: [
+                        const Icon(Icons.note_alt_outlined, size: 55, color: Colors.grey),
+                        const SizedBox(height: 12),
+                        const Text(
+                          'No notices found',
+                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                        ),
+                        const SizedBox(height: 6),
+                        const Text(
+                          'Tap the button below to add your first notice.',
+                          style: TextStyle(color: Colors.black54),
+                        ),
+                        const SizedBox(height: 16),
+                        ElevatedButton.icon(
+                          onPressed: openAddNotice,
+                          icon: const Icon(Icons.add),
+                          label: const Text('Add Notice Now'),
+                        ),
+                      ],
+                    ),
+                  )
+                else
+                  ListView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    itemCount: filteredNotices.length,
+                    itemBuilder: (context, index) {
+                      final notice = filteredNotices[index];
+                      final hasPdf = notice['pdf_url'] != null &&
+                          notice['pdf_url']!.isNotEmpty;
+
+                      return Card(
+                        margin: const EdgeInsets.only(bottom: 14),
+                        elevation: 1.5,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        color: Colors.white,
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(14),
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => NoticeDetailsScreen(notice: notice),
+                              ),
+                            );
+                          },
+                          child: Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 10,
+                                        vertical: 4,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFFD8E4FF),
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
+                                      child: Text(
+                                        notice['category'] ?? 'General',
+                                        style: const TextStyle(
+                                          color: Color(0xFF2457C5),
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ),
+                                    const Spacer(),
+                                    if (hasPdf)
+                                      const Padding(
+                                        padding: EdgeInsets.only(right: 8),
+                                        child: Icon(
+                                          Icons.picture_as_pdf,
+                                          color: Colors.red,
+                                          size: 20,
+                                        ),
+                                      ),
+                                    Text(
+                                      notice['date'] ?? '',
+                                      style: const TextStyle(
+                                        color: Colors.black54,
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 10),
+                                Text(
+                                  notice['title'] ?? 'Untitled Notice',
+                                  style: const TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFF18366F),
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                Text(
+                                  notice['description'] ?? '',
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: Colors.black87,
+                                    fontSize: 13,
+                                    height: 1.4,
+                                  ),
+                                ),
+                                const SizedBox(height: 12),
+                                const Divider(),
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.end,
+                                  children: [
+                                    TextButton.icon(
+                                      onPressed: () => openEditNotice(notice),
+                                      icon: const Icon(Icons.edit, size: 16, color: Color(0xFF2457C5)),
+                                      label: const Text(
+                                        'Edit',
+                                        style: TextStyle(color: Color(0xFF2457C5), fontWeight: FontWeight.bold),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    TextButton.icon(
+                                      onPressed: () => confirmDeleteNotice(notice),
+                                      icon: const Icon(Icons.delete_outline, size: 16, color: Colors.red),
+                                      label: const Text(
+                                        'Delete',
+                                        style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                const SizedBox(height: 40),
+              ],
+            ),
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildStatCard(String label, String value, IconData icon, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.03),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          Icon(icon, color: color, size: 24),
+          const SizedBox(height: 6),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              color: color,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 11,
+              color: Colors.black54,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -761,52 +1197,18 @@ class _AddNoticeScreenState extends State<AddNoticeScreen> {
   final descriptionController = TextEditingController();
 
   String selectedCategory = 'General';
-  String detectCategory(String text) {
-  final content = text.toLowerCase();
-
-  if (content.contains('exam') ||
-      content.contains('examination') ||
-      content.contains('result') ||
-      content.contains('timetable')) {
-    return 'Examination';
-  }
-
-  if (content.contains('placement') ||
-      content.contains('internship') ||
-      content.contains('job') ||
-      content.contains('recruitment')) {
-    return 'Placement';
-  }
-
-  if (content.contains('event') ||
-      content.contains('fest') ||
-      content.contains('workshop') ||
-      content.contains('seminar')) {
-    return 'Events';
-  }
-
-  if (content.contains('assignment') ||
-      content.contains('lecture') ||
-      content.contains('class') ||
-      content.contains('academic')) {
-    return 'Academics';
-  }
-
-  return 'General';
-}
+  String selectedDepartment = 'All Departments';
+  String selectedYear = 'All Years';
   DateTime? selectedDate;
+  DateTime? selectedDeadline;
 
   PlatformFile? selectedPdf;
   String extractedPdfText = '';
   bool isLoading = false;
 
-  final List<String> categories = [
-    'Examination',
-    'Placement',
-    'Events',
-    'Academics',
-    'General',
-  ];
+  final List<String> categories = NoticeParserService.categories;
+  final List<String> departments = NoticeParserService.departments;
+  final List<String> academicYears = NoticeParserService.academicYears;
 
   @override
   void dispose() {
@@ -815,62 +1217,94 @@ class _AddNoticeScreenState extends State<AddNoticeScreen> {
     super.dispose();
   }
 
-  // SELECT PDF FROM DEVICE
+  void autoDetectAll([String? customText]) {
+    final text = customText ?? '${titleController.text} ${descriptionController.text}';
+    if (text.trim().isEmpty) return;
 
-  
-Future<void> choosePdf() async {
-  try {
-    final file = await FilePicker.pickFile(
-      type: FileType.custom,
-      allowedExtensions: ['pdf'],
-    );
-
-    if (file == null) return;
-
-    final pdfBytes = await file.readAsBytes();
-
-    final extractedText =
-        PdfTextService.extractText(pdfBytes);
-
-    if (!mounted) return;
+    final cat = NoticeParserService.detectCategory(text);
+    final dept = NoticeParserService.detectDepartment(text);
+    final yr = NoticeParserService.detectAcademicYear(text);
+    final deadline = NoticeParserService.detectDeadline(text);
 
     setState(() {
-      selectedPdf = file;
-      extractedPdfText = extractedText;
-
-      if (descriptionController.text.trim().isEmpty &&
-          extractedText.trim().isNotEmpty) {
-        descriptionController.text = extractedText;
+      selectedCategory = cat;
+      selectedDepartment = dept;
+      selectedYear = yr;
+      if (deadline != null) {
+        selectedDeadline = deadline;
+        selectedDate ??= deadline;
       }
     });
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          extractedText.trim().isEmpty
-              ? 'PDF selected, but no readable text was found.'
-              : 'PDF selected and text extracted successfully!',
+          'Auto-detected: $cat • $dept • $yr'
+          '${deadline != null ? ' • Deadline: ${deadline.day}/${deadline.month}/${deadline.year}' : ''}',
         ),
-      ),
-    );
-  } catch (error) {
-    if (!mounted) return;
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Could not process PDF: $error'),
+        duration: const Duration(seconds: 3),
       ),
     );
   }
-}
 
+  // SELECT PDF FROM DEVICE
+  Future<void> choosePdf() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['pdf'],
+        withData: true,
+      );
 
-  // SELECT NOTICE DATE
+      if (result == null || result.files.isEmpty) return;
 
+      final file = result.files.first;
+      final pdfBytes = file.bytes;
+
+      if (pdfBytes == null) {
+        throw Exception('Could not read PDF data.');
+      }
+
+      final extractedText = PdfTextService.extractText(pdfBytes);
+
+      if (!mounted) return;
+
+      setState(() {
+        selectedPdf = file;
+        extractedPdfText = extractedText;
+
+        if (descriptionController.text.trim().isEmpty &&
+            extractedText.trim().isNotEmpty) {
+          descriptionController.text = extractedText;
+        }
+      });
+
+      // Automatically detect all metadata from title + extracted PDF text
+      final fullText = '${titleController.text} $extractedText';
+      autoDetectAll(fullText);
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            extractedText.trim().isEmpty
+                ? 'PDF selected, but no readable text was found.'
+                : 'PDF text extracted and auto-categorized successfully!',
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not process PDF: $error')),
+      );
+    }
+  }
+
+  // SELECT NOTICE DATE / DEADLINE
   Future<void> chooseDate() async {
     final pickedDate = await showDatePicker(
       context: context,
-      initialDate: DateTime.now(),
+      initialDate: selectedDate ?? DateTime.now(),
       firstDate: DateTime(2020),
       lastDate: DateTime(2100),
     );
@@ -882,16 +1316,13 @@ Future<void> choosePdf() async {
     }
   }
 
-  // UPLOAD PDF AND PUBLISH NOTICE
-
+  // UPLOAD PDF AND PUBLISH NOTICE + SEND NOTIFICATIONS
   Future<void> saveNotice() async {
     if (!_formKey.currentState!.validate()) return;
 
     if (selectedDate == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Please select a notice date.'),
-        ),
+        const SnackBar(content: Text('Please select a notice date.')),
       );
       return;
     }
@@ -901,69 +1332,98 @@ Future<void> choosePdf() async {
     try {
       String? pdfUrl;
 
-      // UPLOAD SELECTED PDF TO SUPABASE STORAGE
-
-      if (selectedPdf != null) {
-        final pdfPath =
-            '${DateTime.now().millisecondsSinceEpoch}.pdf';
+      // 1. Upload selected PDF to Supabase Storage
+      if (selectedPdf != null && selectedPdf!.bytes != null) {
+        final pdfPath = '${DateTime.now().millisecondsSinceEpoch}.pdf';
 
         await Supabase.instance.client.storage
             .from('notice-pdfs')
             .uploadBinary(
               pdfPath,
-              await selectedPdf!.readAsBytes(),
+              selectedPdf!.bytes!,
               fileOptions: const FileOptions(
                 contentType: 'application/pdf',
                 upsert: false,
               ),
             );
 
-        // GET PUBLIC PDF URL
-
         pdfUrl = Supabase.instance.client.storage
             .from('notice-pdfs')
             .getPublicUrl(pdfPath);
       }
 
-      // SAVE NOTICE DETAILS AND PDF URL IN DATABASE
-      final detectedCategory = detectCategory(
-  '${titleController.text} ${descriptionController.text}',
-);
+      // Format notice date
+      final dateFormatted =
+          '${selectedDate!.year.toString().padLeft(4, '0')}-'
+          '${selectedDate!.month.toString().padLeft(2, '0')}-'
+          '${selectedDate!.day.toString().padLeft(2, '0')}';
 
-debugPrint('NOTICE TITLE: ${titleController.text}');
-debugPrint('DETECTED CATEGORY: $detectedCategory');
+      // 2. Save notice in database
       await Supabase.instance.client.from('notices').insert({
         'title': titleController.text.trim(),
-        'category': detectedCategory,
+        'category': selectedCategory,
         'description': descriptionController.text.trim(),
-        'notice_date':
-            '${selectedDate!.year.toString().padLeft(4, '0')}-'
-            '${selectedDate!.month.toString().padLeft(2, '0')}-'
-            '${selectedDate!.day.toString().padLeft(2, '0')}',
+        'notice_date': dateFormatted,
         'pdf_url': pdfUrl,
       });
+
+      // 3. Dispatch Notifications to relevant students
+      try {
+        final students = await Supabase.instance.client
+            .from('students')
+            .select('id, department, academic_year');
+
+        final notificationsToInsert = <Map<String, dynamic>>[];
+        for (final s in students) {
+          final sDept = s['department']?.toString();
+          final sYear = s['academic_year']?.toString();
+
+          final deptMatch = selectedDepartment == 'All Departments' ||
+              sDept == null ||
+              sDept.toLowerCase().contains(selectedDepartment.toLowerCase()) ||
+              selectedDepartment.toLowerCase().contains(sDept.toLowerCase());
+
+          final yearMatch = selectedYear == 'All Years' ||
+              sYear == null ||
+              sYear == selectedYear;
+
+          if (deptMatch && yearMatch) {
+            notificationsToInsert.add({
+              'student_id': s['id'],
+              'title': 'New Notice: ${titleController.text.trim()}',
+              'message': descriptionController.text.trim().length > 100
+                  ? '${descriptionController.text.trim().substring(0, 100)}...'
+                  : descriptionController.text.trim(),
+              'category': selectedCategory,
+              'is_read': false,
+            });
+          }
+        }
+
+        if (notificationsToInsert.isNotEmpty) {
+          await Supabase.instance.client
+              .from('notifications')
+              .insert(notificationsToInsert);
+          debugPrint('Created ${notificationsToInsert.length} notifications.');
+        }
+      } catch (notifErr) {
+        debugPrint('Could not create notification records: $notifErr');
+      }
 
       if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Notice and PDF published successfully!'),
-        ),
+        const SnackBar(content: Text('Notice and PDF published successfully!')),
       );
 
       Navigator.pop(context, true);
     } catch (error) {
       if (!mounted) return;
-
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Could not publish notice: $error'),
-        ),
+        SnackBar(content: Text('Could not publish notice: $error')),
       );
     } finally {
-      if (mounted) {
-        setState(() => isLoading = false);
-      }
+      if (mounted) setState(() => isLoading = false);
     }
   }
 
@@ -975,6 +1435,500 @@ debugPrint('DETECTED CATEGORY: $detectedCategory');
         title: const Text('Add New Notice'),
         backgroundColor: const Color(0xFF2457C5),
         foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.auto_awesome),
+            tooltip: 'Auto-Detect All Fields',
+            onPressed: () => autoDetectAll(),
+          ),
+        ],
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(20),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Notice Title
+              const Text(
+                'Notice Title',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              TextFormField(
+                controller: titleController,
+                decoration: const InputDecoration(
+                  hintText: 'Enter notice title',
+                  filled: true,
+                  fillColor: Colors.white,
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) {
+                  if (value == null || value.trim().isEmpty) {
+                    return 'Please enter a title';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 20),
+
+              // Category with Auto-Detect badge
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Category',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  TextButton.icon(
+                    onPressed: () => autoDetectAll(),
+                    icon: const Icon(Icons.auto_awesome, size: 16),
+                    label: const Text('Auto-Detect All', style: TextStyle(fontSize: 12)),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              DropdownButtonFormField<String>(
+                value: selectedCategory,
+                decoration: const InputDecoration(
+                  filled: true,
+                  fillColor: Colors.white,
+                  border: OutlineInputBorder(),
+                ),
+                items: categories.map((category) {
+                  return DropdownMenuItem(
+                    value: category,
+                    child: Text(category),
+                  );
+                }).toList(),
+                onChanged: (value) {
+                  if (value != null) setState(() => selectedCategory = value);
+                },
+              ),
+              const SizedBox(height: 20),
+
+              // Department & Academic Year row
+              Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Target Dept',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 8),
+                        DropdownButtonFormField<String>(
+                          value: selectedDepartment,
+                          isExpanded: true,
+                          decoration: const InputDecoration(
+                            filled: true,
+                            fillColor: Colors.white,
+                            border: OutlineInputBorder(),
+                          ),
+                          items: departments.map((dept) {
+                            return DropdownMenuItem(
+                              value: dept,
+                              child: Text(dept, overflow: TextOverflow.ellipsis),
+                            );
+                          }).toList(),
+                          onChanged: (val) {
+                            if (val != null) setState(() => selectedDepartment = val);
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Target Year',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 8),
+                        DropdownButtonFormField<String>(
+                          value: selectedYear,
+                          isExpanded: true,
+                          decoration: const InputDecoration(
+                            filled: true,
+                            fillColor: Colors.white,
+                            border: OutlineInputBorder(),
+                          ),
+                          items: academicYears.map((yr) {
+                            return DropdownMenuItem(
+                              value: yr,
+                              child: Text(yr, overflow: TextOverflow.ellipsis),
+                            );
+                          }).toList(),
+                          onChanged: (val) {
+                            if (val != null) setState(() => selectedYear = val);
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+
+              // Notice Description
+              const Text(
+                'Notice Description',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              TextFormField(
+                controller: descriptionController,
+                maxLines: 6,
+                decoration: const InputDecoration(
+                  hintText: 'Enter complete notice details',
+                  filled: true,
+                  fillColor: Colors.white,
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) {
+                  if (value == null || value.trim().isEmpty) {
+                    return 'Please enter a description';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 20),
+
+              // Notice Date / Deadline
+              Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Text(
+                              'Notice Date / Deadline',
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            if (selectedDeadline != null)
+                              const Padding(
+                                padding: EdgeInsets.only(left: 6),
+                                child: Text(
+                                  '(Detected)',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: Colors.green,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        OutlinedButton.icon(
+                          onPressed: isLoading ? null : chooseDate,
+                          icon: const Icon(Icons.calendar_month),
+                          label: Text(
+                            selectedDate == null
+                                ? 'Select Date'
+                                : '${selectedDate!.day}/'
+                                    '${selectedDate!.month}/'
+                                    '${selectedDate!.year}',
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+
+              // Attach PDF
+              const Text(
+                'Attach Notice PDF',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: isLoading ? null : choosePdf,
+                icon: const Icon(Icons.picture_as_pdf, color: Colors.red),
+                label: Text(
+                  selectedPdf == null
+                      ? 'Choose PDF File'
+                      : selectedPdf!.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              if (selectedPdf != null) ...[
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    const Icon(Icons.check_circle, color: Colors.green, size: 18),
+                    const SizedBox(width: 6),
+                    const Expanded(
+                      child: Text(
+                        'PDF selected & text extracted',
+                        style: TextStyle(color: Colors.green),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: isLoading
+                          ? null
+                          : () {
+                              setState(() => selectedPdf = null);
+                            },
+                      child: const Text('Remove'),
+                    ),
+                  ],
+                ),
+              ],
+              const SizedBox(height: 30),
+
+              // Publish Button
+              SizedBox(
+                height: 55,
+                child: ElevatedButton.icon(
+                  onPressed: isLoading ? null : saveNotice,
+                  icon: const Icon(Icons.publish),
+                  label: isLoading
+                      ? const CircularProgressIndicator(color: Colors.white)
+                      : const Text(
+                          'PUBLISH NOTICE',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF2457C5),
+                    foregroundColor: Colors.white,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// EDIT NOTICE SCREEN
+
+class EditNoticeScreen extends StatefulWidget {
+  final Map<String, String> notice;
+
+  const EditNoticeScreen({super.key, required this.notice});
+
+  @override
+  State<EditNoticeScreen> createState() => _EditNoticeScreenState();
+}
+
+class _EditNoticeScreenState extends State<EditNoticeScreen> {
+  final _formKey = GlobalKey<FormState>();
+
+  late final TextEditingController titleController;
+  late final TextEditingController descriptionController;
+
+  late String selectedCategory;
+  late String selectedDepartment;
+  late String selectedYear;
+  DateTime? selectedDate;
+  DateTime? selectedDeadline;
+
+  PlatformFile? selectedPdf;
+  bool isLoading = false;
+
+  final List<String> categories = NoticeParserService.categories;
+  final List<String> departments = NoticeParserService.departments;
+  final List<String> academicYears = NoticeParserService.academicYears;
+
+  @override
+  void initState() {
+    super.initState();
+    titleController = TextEditingController(text: widget.notice['title'] ?? '');
+    descriptionController = TextEditingController(text: widget.notice['description'] ?? '');
+
+    selectedCategory = categories.contains(widget.notice['category'])
+        ? widget.notice['category']!
+        : 'General';
+
+    try {
+      final dateStr = widget.notice['date'];
+      if (dateStr != null && dateStr.isNotEmpty) {
+        selectedDate = DateTime.tryParse(dateStr);
+      }
+    } catch (_) {}
+
+    final fullText = '${titleController.text} ${descriptionController.text}';
+    selectedDepartment = NoticeParserService.detectDepartment(fullText);
+    selectedYear = NoticeParserService.detectAcademicYear(fullText);
+    selectedDeadline = NoticeParserService.detectDeadline(fullText);
+  }
+
+  @override
+  void dispose() {
+    titleController.dispose();
+    descriptionController.dispose();
+    super.dispose();
+  }
+
+  void autoDetectAll() {
+    final text = '${titleController.text} ${descriptionController.text}';
+    if (text.trim().isEmpty) return;
+
+    final cat = NoticeParserService.detectCategory(text);
+    final dept = NoticeParserService.detectDepartment(text);
+    final yr = NoticeParserService.detectAcademicYear(text);
+    final deadline = NoticeParserService.detectDeadline(text);
+
+    setState(() {
+      selectedCategory = cat;
+      selectedDepartment = dept;
+      selectedYear = yr;
+      if (deadline != null) {
+        selectedDeadline = deadline;
+        selectedDate ??= deadline;
+      }
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Auto-detected: $cat • $dept • $yr'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  Future<void> choosePdf() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['pdf'],
+        withData: true,
+      );
+
+      if (result == null || result.files.isEmpty) return;
+
+      final file = result.files.first;
+      final pdfBytes = file.bytes;
+
+      if (pdfBytes == null) {
+        throw Exception('Could not read PDF bytes.');
+      }
+
+      final extractedText = PdfTextService.extractText(pdfBytes);
+
+      if (!mounted) return;
+
+      setState(() {
+        selectedPdf = file;
+        if (descriptionController.text.trim().isEmpty &&
+            extractedText.trim().isNotEmpty) {
+          descriptionController.text = extractedText;
+        }
+      });
+
+      autoDetectAll();
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('New PDF selected & text parsed!')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error choosing PDF: $e')),
+      );
+    }
+  }
+
+  Future<void> chooseDate() async {
+    final pickedDate = await showDatePicker(
+      context: context,
+      initialDate: selectedDate ?? DateTime.now(),
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2100),
+    );
+
+    if (pickedDate != null && mounted) {
+      setState(() {
+        selectedDate = pickedDate;
+      });
+    }
+  }
+
+  Future<void> updateNotice() async {
+    if (!_formKey.currentState!.validate()) return;
+
+    setState(() => isLoading = true);
+
+    try {
+      String? pdfUrl = widget.notice['pdf_url'];
+
+      if (selectedPdf != null && selectedPdf!.bytes != null) {
+        final pdfPath = '${DateTime.now().millisecondsSinceEpoch}.pdf';
+        await Supabase.instance.client.storage.from('notice-pdfs').uploadBinary(
+          pdfPath,
+          selectedPdf!.bytes!,
+          fileOptions: const FileOptions(
+            contentType: 'application/pdf',
+            upsert: false,
+          ),
+        );
+        pdfUrl = Supabase.instance.client.storage
+            .from('notice-pdfs')
+            .getPublicUrl(pdfPath);
+      }
+
+      final noticeDateFormatted = selectedDate != null
+          ? '${selectedDate!.year.toString().padLeft(4, '0')}-'
+            '${selectedDate!.month.toString().padLeft(2, '0')}-'
+            '${selectedDate!.day.toString().padLeft(2, '0')}'
+          : widget.notice['date'] ?? '';
+
+      await Supabase.instance.client.from('notices').update({
+        'title': titleController.text.trim(),
+        'category': selectedCategory,
+        'description': descriptionController.text.trim(),
+        'notice_date': noticeDateFormatted,
+        if (pdfUrl != null && pdfUrl.isNotEmpty) 'pdf_url': pdfUrl,
+      }).eq('id', widget.notice['id']!);
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Notice updated successfully!')),
+      );
+
+      Navigator.pop(context, true);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Update failed: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => isLoading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final existingPdf = widget.notice['pdf_url'];
+
+    return Scaffold(
+      backgroundColor: const Color(0xFFF4F6FA),
+      appBar: AppBar(
+        title: const Text('Edit Notice'),
+        backgroundColor: const Color(0xFF2457C5),
+        foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.auto_awesome),
+            tooltip: 'Auto-Detect',
+            onPressed: autoDetectAll,
+          ),
+        ],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
@@ -1004,13 +1958,24 @@ debugPrint('DETECTED CATEGORY: $detectedCategory');
                 },
               ),
               const SizedBox(height: 20),
-              const Text(
-                'Category',
-                style: TextStyle(fontWeight: FontWeight.bold),
+
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Category',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  TextButton.icon(
+                    onPressed: autoDetectAll,
+                    icon: const Icon(Icons.auto_awesome, size: 16),
+                    label: const Text('Auto-Detect', style: TextStyle(fontSize: 12)),
+                  ),
+                ],
               ),
               const SizedBox(height: 8),
               DropdownButtonFormField<String>(
-                initialValue: selectedCategory,
+                value: selectedCategory,
                 decoration: const InputDecoration(
                   filled: true,
                   fillColor: Colors.white,
@@ -1023,12 +1988,73 @@ debugPrint('DETECTED CATEGORY: $detectedCategory');
                   );
                 }).toList(),
                 onChanged: (value) {
-                  if (value != null) {
-                    setState(() => selectedCategory = value);
-                  }
+                  if (value != null) setState(() => selectedCategory = value);
                 },
               ),
               const SizedBox(height: 20),
+
+              // Department & Academic Year
+              Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('Target Dept', style: TextStyle(fontWeight: FontWeight.bold)),
+                        const SizedBox(height: 8),
+                        DropdownButtonFormField<String>(
+                          value: selectedDepartment,
+                          isExpanded: true,
+                          decoration: const InputDecoration(
+                            filled: true,
+                            fillColor: Colors.white,
+                            border: OutlineInputBorder(),
+                          ),
+                          items: departments.map((dept) {
+                            return DropdownMenuItem(
+                              value: dept,
+                              child: Text(dept, overflow: TextOverflow.ellipsis),
+                            );
+                          }).toList(),
+                          onChanged: (val) {
+                            if (val != null) setState(() => selectedDepartment = val);
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('Target Year', style: TextStyle(fontWeight: FontWeight.bold)),
+                        const SizedBox(height: 8),
+                        DropdownButtonFormField<String>(
+                          value: selectedYear,
+                          isExpanded: true,
+                          decoration: const InputDecoration(
+                            filled: true,
+                            fillColor: Colors.white,
+                            border: OutlineInputBorder(),
+                          ),
+                          items: academicYears.map((yr) {
+                            return DropdownMenuItem(
+                              value: yr,
+                              child: Text(yr, overflow: TextOverflow.ellipsis),
+                            );
+                          }).toList(),
+                          onChanged: (val) {
+                            if (val != null) setState(() => selectedYear = val);
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+
               const Text(
                 'Notice Description',
                 style: TextStyle(fontWeight: FontWeight.bold),
@@ -1051,8 +2077,9 @@ debugPrint('DETECTED CATEGORY: $detectedCategory');
                 },
               ),
               const SizedBox(height: 20),
+
               const Text(
-                'Notice Date',
+                'Notice Date / Deadline',
                 style: TextStyle(fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 8),
@@ -1068,21 +2095,21 @@ debugPrint('DETECTED CATEGORY: $detectedCategory');
                 ),
               ),
               const SizedBox(height: 20),
+
               const Text(
-                'Attach Notice PDF',
+                'PDF Document',
                 style: TextStyle(fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 8),
               OutlinedButton.icon(
                 onPressed: isLoading ? null : choosePdf,
-                icon: const Icon(
-                  Icons.picture_as_pdf,
-                  color: Colors.red,
-                ),
+                icon: const Icon(Icons.picture_as_pdf, color: Colors.red),
                 label: Text(
-                  selectedPdf == null
-                      ? 'Choose PDF File'
-                      : selectedPdf!.name,
+                  selectedPdf != null
+                      ? 'New PDF: ${selectedPdf!.name}'
+                      : (existingPdf != null && existingPdf.isNotEmpty)
+                          ? 'Replace Existing PDF'
+                          : 'Choose PDF File',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
@@ -1091,46 +2118,36 @@ debugPrint('DETECTED CATEGORY: $detectedCategory');
                 const SizedBox(height: 8),
                 Row(
                   children: [
-                    const Icon(
-                      Icons.check_circle,
-                      color: Colors.green,
-                      size: 18,
-                    ),
+                    const Icon(Icons.check_circle, color: Colors.green, size: 18),
                     const SizedBox(width: 6),
                     const Expanded(
-                      child: Text(
-                        'PDF selected successfully',
-                        style: TextStyle(color: Colors.green),
-                      ),
+                      child: Text('New PDF ready to upload', style: TextStyle(color: Colors.green)),
                     ),
                     TextButton(
-                      onPressed: isLoading
-                          ? null
-                          : () {
-                              setState(() {
-                                selectedPdf = null;
-                              });
-                            },
-                      child: const Text('Remove'),
+                      onPressed: () => setState(() => selectedPdf = null),
+                      child: const Text('Cancel New PDF'),
                     ),
                   ],
                 ),
+              ] else if (existingPdf != null && existingPdf.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                const Text(
+                  'Notice currently has an attached PDF document.',
+                  style: TextStyle(color: Colors.black54, fontSize: 12),
+                ),
               ],
               const SizedBox(height: 30),
+
               SizedBox(
                 height: 55,
                 child: ElevatedButton.icon(
-                  onPressed: isLoading ? null : saveNotice,
-                  icon: const Icon(Icons.publish),
+                  onPressed: isLoading ? null : updateNotice,
+                  icon: const Icon(Icons.save),
                   label: isLoading
-                      ? const CircularProgressIndicator(
-                          color: Colors.white,
-                        )
+                      ? const CircularProgressIndicator(color: Colors.white)
                       : const Text(
-                          'PUBLISH NOTICE',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                          ),
+                          'SAVE CHANGES',
+                          style: TextStyle(fontWeight: FontWeight.bold),
                         ),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF2457C5),
@@ -1529,6 +2546,11 @@ class NoticeDetailsScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final combinedText = '${notice['title'] ?? ''} ${notice['description'] ?? ''}';
+    final detectedDept = NoticeParserService.detectDepartment(combinedText);
+    final detectedYear = NoticeParserService.detectAcademicYear(combinedText);
+    final detectedDeadline = NoticeParserService.detectDeadline(combinedText);
+
     return Scaffold(
       backgroundColor: const Color(0xFFF4F6FA),
       appBar: AppBar(
@@ -1559,25 +2581,63 @@ class NoticeDetailsScreen extends StatelessWidget {
                 ),
               ),
             ),
-            const SizedBox(height: 25),
-            Text(
-              notice['category'] ?? 'General',
-              style: const TextStyle(
-                color: Color(0xFF2457C5),
-                fontSize: 14,
-                fontWeight: FontWeight.bold,
-              ),
+            const SizedBox(height: 20),
+
+            // Metadata Chips: Category, Dept, Year
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                Chip(
+                  backgroundColor: const Color(0xFFD8E4FF),
+                  avatar: const Icon(Icons.label, size: 16, color: Color(0xFF2457C5)),
+                  label: Text(
+                    notice['category'] ?? 'General',
+                    style: const TextStyle(
+                      color: Color(0xFF2457C5),
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                if (detectedDept != 'All Departments')
+                  Chip(
+                    backgroundColor: const Color(0xFFE8F5E9),
+                    avatar: const Icon(Icons.domain, size: 16, color: Colors.green),
+                    label: Text(
+                      detectedDept,
+                      style: const TextStyle(
+                        color: Colors.green,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                if (detectedYear != 'All Years')
+                  Chip(
+                    backgroundColor: const Color(0xFFFFF3E0),
+                    avatar: const Icon(Icons.school, size: 16, color: Colors.deepOrange),
+                    label: Text(
+                      detectedYear,
+                      style: const TextStyle(
+                        color: Colors.deepOrange,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+              ],
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 14),
+
             Text(
               notice['title'] ?? 'Notice',
               style: const TextStyle(
-                fontSize: 25,
+                fontSize: 24,
                 fontWeight: FontWeight.bold,
                 color: Color(0xFF18366F),
               ),
             ),
             const SizedBox(height: 18),
+
+            // Date Card
             Container(
               padding: const EdgeInsets.all(15),
               decoration: BoxDecoration(
@@ -1590,28 +2650,50 @@ class NoticeDetailsScreen extends StatelessWidget {
                     Icons.calendar_month,
                     color: Color(0xFF2457C5),
                   ),
-                  const SizedBox(width: 10),
+                  const SizedBox(width: 12),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const Text(
-                          'Important Date',
+                          'Notice Date / Deadline',
                           style: TextStyle(
                             color: Colors.black54,
                             fontSize: 12,
                           ),
                         ),
                         const SizedBox(height: 4),
-                        Text(
-                          (notice['date'] == null ||
-                                  notice['date']!.isEmpty)
-                              ? 'Not specified'
-                              : notice['date']!,
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 14,
-                          ),
+                        Row(
+                          children: [
+                            Text(
+                              (notice['date'] == null || notice['date']!.isEmpty)
+                                  ? 'Not specified'
+                                  : notice['date']!,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 14,
+                              ),
+                            ),
+                            if (detectedDeadline != null) ...[
+                              const SizedBox(width: 10),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: Colors.red.shade50,
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(color: Colors.red.shade200),
+                                ),
+                                child: Text(
+                                  'Deadline: ${detectedDeadline.day}/${detectedDeadline.month}/${detectedDeadline.year}',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: Colors.red.shade700,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
                         ),
                       ],
                     ),
@@ -1638,7 +2720,7 @@ class NoticeDetailsScreen extends StatelessWidget {
               child: Text(
                 notice['description'] ?? 'No description available.',
                 style: const TextStyle(
-                  fontSize: 16,
+                  fontSize: 15,
                   height: 1.6,
                   color: Colors.black87,
                 ),
